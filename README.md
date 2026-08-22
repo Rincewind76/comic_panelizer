@@ -74,6 +74,8 @@ Metadaten (Autor, ISBN, Serie, Verlag, Schlagworte, Beschreibung) werden überno
 
 Ohne `metadata.opf` wird ersatzweise eine `ComicInfo.xml` aus dem Original benutzt.
 
+**Mehrere Comics in einem Ordner:** Die automatische Suche greift nur, wenn im selben Ordner ausschließlich diese eine Comicdatei liegt (Calibre-typisch: ein Ordner pro Buch). Liegen dort mehrere Comics — z.B. ein formlos befüllter Ordner statt einer Calibre-Bibliothek —, wird bewusst *keine* `metadata.opf` verwendet, statt sie riskant dem falschen Buch zuzuordnen. Mit `--opf PFAD` lässt sich pro Lauf trotzdem gezielt eine Datei vorgeben.
+
 | Option | Bedeutung |
 |---|---|
 | `--opf PFAD` | `metadata.opf` explizit angeben |
@@ -169,6 +171,8 @@ Metadata (author, ISBN, series, publisher, tags, description) is picked up when 
 - `metadata.opf` — copied through unchanged, so nothing gets lost
 
 Without a `metadata.opf`, an existing `ComicInfo.xml` from the original is used instead.
+
+**Multiple comics in one folder:** auto-detection only kicks in when that one comic file is the only comic in its folder (Calibre-typical: one folder per book). If several comics share a folder — e.g. a loosely organized folder instead of a Calibre library — no `metadata.opf` is used at all, rather than risk attaching it to the wrong book. Use `--opf PATH` to point at a specific file for a run regardless.
 
 | Option | Meaning |
 |---|---|

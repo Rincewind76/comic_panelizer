@@ -93,6 +93,7 @@ import cv2
 import numpy as np
  
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+COMIC_EXT = {".cbz", ".cbr", ".zip", ".rar", ".7z", ".pdf"}
  
  
 # --------------------------------------------------------------------------
@@ -171,8 +172,20 @@ def imread_unicode(path: Path):
 # --------------------------------------------------------------------------
  
 def find_opf(src: Path) -> Path | None:
-    """metadata.opf neben der Comicdatei suchen (Calibre legt sie im Buchordner ab)."""
+    """metadata.opf neben der Comicdatei suchen (Calibre legt sie im Buchordner ab).
+
+    Nur verwenden, wenn im selben Ordner ausschliesslich diese eine Comicdatei
+    liegt (Calibre: ein Ordner pro Buch). Liegen dort mehrere Comics - z.B. ein
+    formlos befuellter Ordner statt einer Calibre-Bibliothek -, koennte die
+    gefundene metadata.opf zu einem anderen Buch gehoeren und wuerde sonst
+    faelschlich allen Comics im Ordner zugeordnet.
+    """
     folder = src if src.is_dir() else src.parent
+    if not src.is_dir():
+        siblings = [p for p in folder.iterdir()
+                    if p.is_file() and p.suffix.lower() in COMIC_EXT]
+        if len(siblings) > 1:
+            return None
     direct = folder / "metadata.opf"
     if direct.is_file():
         return direct
