@@ -1,0 +1,26 @@
+# macOS Temp-/Metadaten-Dateien
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Test-/Eingabe-Comics
+*.cbr
+*.cbz
+*.pdf
+
+# vom Skript erzeugte Ausgaben
+panels/
+*_preview/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
