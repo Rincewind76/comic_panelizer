@@ -33,6 +33,7 @@ python3 comic2panels.py ~/Comics/*.cbz -o ~/Desktop/panels
 python3 comic2panels.py manga.cbz --manga           # Lesereihenfolge rechts->links
 python3 comic2panels.py x.cbz --include-page        # ganze Seite vor ihren Panels
 python3 comic2panels.py x.cbz --rotate-wide         # breite Einzelpanels quer legen
+python3 comic2panels.py x.cbz --skip-start 2 --skip-end 3  # erste 2 / letzte 3 Seiten unveraendert lassen
 ```
 
 **Batch:** ein Stammverzeichnis rekursiv nach CBRs durchsuchen und alles verarbeiten (die Ordnerstruktur wird im Ziel gespiegelt, Vorhandenes wird übersprungen):
@@ -49,6 +50,19 @@ python3 comic2panels.py ~/Comics --scan --scan-ext cbr,cbz,pdf -o out
 ```bash
 python3 comic2panels.py ~/Comics/*.cbr --repack -o ~/Desktop/cbz
 ```
+
+### Erste/letzte Seiten unverändert lassen
+
+Mit `--skip-start N` und `--skip-end N` werden die ersten bzw. letzten N Seiten 1:1 in die Ausgabe übernommen — ohne Panel-Erkennung. Praktisch für Cover, Vorworte, Anhang oder Werbeseiten, die nicht zerschnitten werden sollen.
+
+```bash
+python3 comic2panels.py x.cbz --skip-start 2 --skip-end 3
+```
+
+| Option | Bedeutung |
+|---|---|
+| `--skip-start N` | die ersten N Seiten unverändert übernehmen |
+| `--skip-end N` | die letzten N Seiten unverändert übernehmen |
 
 ### Metadaten (Calibre)
 
@@ -68,13 +82,17 @@ Ohne `metadata.opf` wird ersatzweise eine `ComicInfo.xml` aus dem Original benut
 
 ### Stellschrauben, wenn die Erkennung danebenliegt
 
+Standardmäßig gilt `--gutter 0.008` (0,8 % der kürzeren Seitenkante als Mindestbreite eines Zwischenraums).
+
 | Option | Bedeutung |
 |---|---|
-| `--gutter 0.02` | nur breitere Zwischenräume als Trennung werten (weniger Schnitte) |
-| `--gutter 0.006` | auch enge Zwischenräume trennen (mehr Schnitte) |
+| `--gutter 0.015` | nur breitere Zwischenräume als Trennung werten (weniger Schnitte) |
+| `--gutter 0.004` | auch enge Zwischenräume trennen (mehr Schnitte) |
 | `--min-area 0.03` | kleine Fragmente verwerfen |
 | `--bridge 0.2` | großzügiger gegenüber Figuren, die über den Rand ragen |
 | `--tolerance 45` | für graue/vergilbte Scans |
+
+**Grenzfall:** Stoßen einzelne Panels ohne jeden Zwischenraum aneinander (nur durch eine dünne Rahmenlinie getrennt), findet die Erkennung — die auf Weißraum-Lücken beruht — diese eine Trennung grundsätzlich nicht, auch nicht mit kleinerem `--gutter`. Die betroffenen Panels landen dann zusammen in einem etwas größeren Ausschnitt statt einzeln; der Rest der Seite wird davon nicht beeinträchtigt. Mit `--preview` prüfen, ob das vorkommt.
 
 ### Alle Optionen
 
@@ -111,6 +129,7 @@ python3 comic2panels.py ~/Comics/*.cbz -o ~/Desktop/panels
 python3 comic2panels.py manga.cbz --manga           # right-to-left reading order
 python3 comic2panels.py x.cbz --include-page        # full page before its panels
 python3 comic2panels.py x.cbz --rotate-wide         # rotate wide solo panels to landscape
+python3 comic2panels.py x.cbz --skip-start 2 --skip-end 3  # keep first 2 / last 3 pages unchanged
 ```
 
 **Batch:** recursively scan a root directory for CBRs and process everything (the folder structure is mirrored into the target, existing output is skipped):
@@ -127,6 +146,19 @@ python3 comic2panels.py ~/Comics --scan --scan-ext cbr,cbz,pdf -o out
 ```bash
 python3 comic2panels.py ~/Comics/*.cbr --repack -o ~/Desktop/cbz
 ```
+
+### Keeping first/last pages unchanged
+
+`--skip-start N` and `--skip-end N` copy the first/last N pages straight through to the output — no panel detection. Useful for covers, forewords, appendices, or ad pages that shouldn't be split.
+
+```bash
+python3 comic2panels.py x.cbz --skip-start 2 --skip-end 3
+```
+
+| Option | Meaning |
+|---|---|
+| `--skip-start N` | keep the first N pages unchanged |
+| `--skip-end N` | keep the last N pages unchanged |
 
 ### Metadata (Calibre)
 
@@ -146,13 +178,17 @@ Without a `metadata.opf`, an existing `ComicInfo.xml` from the original is used 
 
 ### Tuning knobs if detection gets it wrong
 
+The default is `--gutter 0.008` (0.8% of the shorter page edge as the minimum gap width).
+
 | Option | Meaning |
 |---|---|
-| `--gutter 0.02` | only count wider gaps as separators (fewer cuts) |
-| `--gutter 0.006` | also split on narrow gaps (more cuts) |
+| `--gutter 0.015` | only count wider gaps as separators (fewer cuts) |
+| `--gutter 0.004` | also split on narrow gaps (more cuts) |
 | `--min-area 0.03` | discard small fragments |
 | `--bridge 0.2` | more tolerant of art bleeding over a panel edge |
 | `--tolerance 45` | for grey/yellowed scans |
+
+**Known limit:** when individual panels touch with no gap at all (separated only by a thin border rule), detection — which relies on whitespace gaps — cannot find that particular split, no matter how low `--gutter` goes. Those panels end up together in one slightly larger crop instead of split apart; the rest of the page is unaffected. Check with `--preview` to see if this happens in your book.
 
 ### All options
 

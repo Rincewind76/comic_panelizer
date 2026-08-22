@@ -13,6 +13,9 @@ Beispiel / Example:
     python3 comic2panels.py manga.cbz --manga           # [DE] Lesereihenfolge rechts->links / [EN] right-to-left reading order
     python3 comic2panels.py x.cbz --include-page        # [DE] ganze Seite vor ihren Panels / [EN] full page before its panels
     python3 comic2panels.py x.cbz --rotate-wide         # [DE] breite Einzelpanels quer legen / [EN] rotate wide solo panels to landscape
+    python3 comic2panels.py x.cbz --skip-start 2 --skip-end 3
+        # [DE] erste 2 und letzte 3 Seiten unveraendert uebernehmen (kein Zerlegen)
+        # [EN] keep the first 2 and last 3 pages unchanged (no splitting)
 
 Batch:
     [DE] ein Stammverzeichnis rekursiv nach CBRs durchsuchen und alles verarbeiten
@@ -56,8 +59,8 @@ books. It ends up in the new CBZ in three places:
 
 [DE] Stellschrauben, wenn die Erkennung danebenliegt:
 [EN] Tuning knobs if detection gets it wrong:
-    --gutter 0.02     [DE] nur breitere Zwischenraeume als Trennung werten (weniger Schnitte) / [EN] only count wider gaps as separators (fewer cuts)
-    --gutter 0.006    [DE] auch enge Zwischenraeume trennen (mehr Schnitte) / [EN] also split on narrow gaps (more cuts)
+    --gutter 0.015    [DE] nur breitere Zwischenraeume als Trennung werten (weniger Schnitte) / [EN] only count wider gaps as separators (fewer cuts)
+    --gutter 0.004    [DE] auch enge Zwischenraeume trennen (mehr Schnitte) / [EN] also split on narrow gaps (more cuts)
     --min-area 0.03   [DE] kleine Fragmente verwerfen / [EN] discard small fragments
     --bridge 0.2      [DE] grosszuegiger gegenueber Figuren, die ueber den Rand ragen / [EN] more tolerant of art bleeding over a panel edge
     --tolerance 45    [DE] fuer graue/vergilbte Scans / [EN] for grey/yellowed scans
@@ -424,12 +427,12 @@ def output_name(src: Path, meta: dict, args) -> str:
 # Panel-Erkennung (rekursiver XY-Cut entlang der Gutter)
 # --------------------------------------------------------------------------
  
-def background_color(img: np.ndarray, tol: int = 28) -> np.ndarray:
-    """Farbe des Seitenhintergrunds schaetzen.
- 
+def background_color(img: np.ndarray, tol: int = 28) -> tuple[np.ndarray, float]:
+    """Farbe des Seitenhintergrunds schaetzen, mit Konfidenz (0..1).
+
     Normalfall: der Seitenrand. Bei randabfallenden Seiten (Zeichnung bis an die
     Kante) ist der Rand kein Hintergrund - dann wird zwischen Weiss und Schwarz
-    nach Haeufigkeit im ganzen Bild entschieden.
+    nach Haeufigkeit im ganzen Bild entschieden (niedrige Konfidenz).
     """
     h, w = img.shape[:2]
     b = max(2, int(min(h, w) * 0.01))
@@ -439,15 +442,18 @@ def background_color(img: np.ndarray, tol: int = 28) -> np.ndarray:
     ])
     cand = np.median(border, axis=0)
     close = (np.abs(border.astype(np.int16) - cand.astype(np.int16)).max(axis=1) <= tol)
-    if close.mean() >= 0.4:
-        return cand
- 
+    confidence = float(close.mean())
+    if confidence >= 0.4:
+        return cand, confidence
+
     small = cv2.resize(img, (0, 0), fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
     flat = small.reshape(-1, 3).astype(np.int16)
     white = (np.abs(flat - 255).max(axis=1) <= tol).sum()
     black = (np.abs(flat).max(axis=1) <= tol).sum()
-    return np.array([255.0, 255.0, 255.0]) if white >= black else np.array([0.0, 0.0, 0.0])
- 
+    total = flat.shape[0]
+    if white >= black:
+        return np.array([255.0, 255.0, 255.0]), white / total
+    return np.array([0.0, 0.0, 0.0]), black / total
  
 def fill_holes(mask: np.ndarray) -> np.ndarray:
     """Eingeschlossene Hintergrundflaechen (Sprechblasen, Textkaesten) als Inhalt werten.
@@ -477,10 +483,20 @@ def content_mask(img: np.ndarray, bg: np.ndarray, tol: int, fill: bool = True) -
  
  
 def bg_candidates(img: np.ndarray, tol: int) -> list[np.ndarray]:
-    """Hintergrund-Kandidaten: Randfarbe, Weiss, Schwarz (ohne Dubletten)."""
-    cands = [background_color(img, tol),
-             np.array([255.0, 255.0, 255.0]),
-             np.array([0.0, 0.0, 0.0])]
+    """Hintergrund-Kandidaten: Randfarbe, Weiss, Schwarz (ohne Dubletten).
+
+    Ist die Randfarbe mit hoher Konfidenz erkannt (deutlicher, gleichmaessiger
+    Seitenrand), wird nur sie verwendet. Sonst wuerden Weiss/Schwarz als
+    Alternativen mitkonkurrieren und - da auf farbigen randlosen Seiten praktisch
+    jedes Pixel von Schwarz abweicht - eine falsche Schwarz-Vermutung koennte
+    trotz eindeutig erkanntem Seitenrand gewinnen (Score durch trivial hohe
+    Fuellung eines einzigen Riesenpanels).
+    """
+    border, confidence = background_color(img, tol)
+    if confidence >= 0.6:
+        return [border]
+
+    cands = [border, np.array([255.0, 255.0, 255.0]), np.array([0.0, 0.0, 0.0])]
     out: list[np.ndarray] = []
     for c in cands:
         if not any(np.abs(c - o).max() <= tol for o in out):
@@ -672,7 +688,7 @@ def _panels_for_bg(img, bg, args):
         weights.append(a)
     fill = float(np.average(fills, weights=weights)) if fills else 0.0
     score = fill + 0.02 * min(len(boxes), 12)
-    return boxes, score
+    return boxes, score, fill
  
  
 def detect_panels(img: np.ndarray, args) -> list[tuple[int, int, int, int]]:
@@ -685,21 +701,30 @@ def detect_panels(img: np.ndarray, args) -> list[tuple[int, int, int, int]]:
                         interpolation=cv2.INTER_AREA) if scale < 1 else img)
     # leichtes Glaetten: JPEG-Artefakte und Papierkorn stoeren die Maske sonst
     small = cv2.GaussianBlur(small, (3, 3), 0)
- 
-    best, best_bg, best_score = None, None, -1.0
+
+    best, best_bg, best_score, best_fill = None, None, -1.0, 0.0
     for bg in bg_candidates(small, args.tolerance):
-        boxes, score = _panels_for_bg(small, bg, args)
+        boxes, score, fill = _panels_for_bg(small, bg, args)
         if score > best_score:
-            best, best_bg, best_score = boxes, bg, score
- 
+            best, best_bg, best_score, best_fill = boxes, bg, score, fill
+
     # Rueckfall fuer flaue Scans: kam nichts heraus, mit hoeherer Toleranz nachfassen
     if len(best) <= 1 and args.tolerance < 45:
         relaxed = argparse.Namespace(**{**vars(args), "tolerance": 45})
         for bg in bg_candidates(small, 45):
-            boxes, score = _panels_for_bg(small, bg, relaxed)
+            boxes, score, fill = _panels_for_bg(small, bg, relaxed)
             if len(boxes) > 1 and score > best_score:
-                best, best_bg, best_score = boxes, bg, score
- 
+                best, best_bg, best_score, best_fill = boxes, bg, score, fill
+
+    # Umrandete Panels sind durch ihre geschlossene Rahmenlinie praktisch
+    # vollstaendig "gefuellt" (fill_holes schliesst das Rahmeninnere). Locker
+    # verteilter Text auf randlosen Titel-/Coverseiten erreicht das nicht - so
+    # eine Seite wird wie eine Splash-Page unveraendert uebernommen, statt an
+    # zufaelligen Weissraeumen zwischen Textzeilen zerschnitten zu werden.
+    if len(best) > 1 and best_fill < 0.75:
+        bh, bw = small.shape[:2]
+        best = [(0, 0, bw, bh)]
+
     inv = 1.0 / scale if scale < 1 else 1.0
     boxes = []
     for x0, y0, x1, y1 in best:
@@ -707,7 +732,7 @@ def detect_panels(img: np.ndarray, args) -> list[tuple[int, int, int, int]]:
                       min(w, int(round(x1 * inv))), min(h, int(round(y1 * inv)))))
     ordered, solo = order_panels(boxes, args.manga)
     return ordered, solo, best_bg
- 
+
  
 # --------------------------------------------------------------------------
 # Ausgabe
@@ -758,6 +783,7 @@ def process_comic(src: Path, outdir: Path, args) -> Path | None:
         if args.preview:
             prev_dir.mkdir(parents=True, exist_ok=True)
  
+        n_pages = len(pages)
         n_panels = 0
         for pi, page in enumerate(pages, 1):
             if args.repack:      # nur umpacken: Bilder unveraendert uebernehmen
@@ -766,7 +792,15 @@ def process_comic(src: Path, outdir: Path, args) -> Path | None:
                     dest = stage / f"{pi:04d}_{page.name}"
                 shutil.copy2(page, dest)
                 continue
- 
+
+            # Erste/letzte N Seiten (Cover, Vor-/Nachwort, Werbung) unveraendert
+            # uebernehmen - ohne Panel-Erkennung.
+            if pi <= args.skip_start or pi > n_pages - args.skip_end:
+                shutil.copy2(page, stage / f"{pi:04d}_01{page.suffix.lower()}")
+                n_panels += 1
+                print(f"  Seite {pi}/{n_pages}: uebersprungen (unveraendert)", end="\r")
+                continue
+
             img = imread_unicode(page)
             if img is None:
                 continue
@@ -875,6 +909,12 @@ def main():
                     help="Kontrollbilder mit eingezeichneten Panels schreiben")
     ap.add_argument("--include-page", action="store_true",
                     help="vor den Panels jeweils die ganze Seite einfuegen")
+    ap.add_argument("--skip-start", type=int, default=0, metavar="N",
+                    help="die ersten N Seiten unveraendert uebernehmen "
+                         "(keine Panel-Erkennung, z.B. fuer Cover/Vorworte)")
+    ap.add_argument("--skip-end", type=int, default=0, metavar="N",
+                    help="die letzten N Seiten unveraendert uebernehmen "
+                         "(keine Panel-Erkennung, z.B. fuer Anhang/Werbung)")
     ap.add_argument("--grayscale", action="store_true", help="in Graustufen ausgeben")
     ap.add_argument("--opf", default=None,
                     help="metadata.opf explizit angeben (sonst wird neben der "
@@ -904,7 +944,7 @@ def main():
     ap.add_argument("--max-upscale", type=float, default=2.5)
     ap.add_argument("--tolerance", type=int, default=28,
                     help="Farbabstand zum Hintergrund, ab dem ein Pixel als Inhalt gilt")
-    ap.add_argument("--gutter", type=float, default=0.012,
+    ap.add_argument("--gutter", type=float, default=0.008,
                     help="Mindestbreite eines Gutters als Anteil der Seite")
     ap.add_argument("--noise", type=float, default=0.006,
                     help="erlaubter Stoeranteil in einer 'leeren' Zeile/Spalte")
