@@ -60,8 +60,8 @@ books. It ends up in the new CBZ in three places:
 [DE] Stellschrauben, wenn die Erkennung danebenliegt:
 [EN] Tuning knobs if detection gets it wrong:
     --gutter 0.015    [DE] nur breitere Zwischenraeume als Trennung werten (weniger Schnitte) / [EN] only count wider gaps as separators (fewer cuts)
-    --gutter 0.004    [DE] auch enge Zwischenraeume trennen (mehr Schnitte) / [EN] also split on narrow gaps (more cuts)
-    --min-area 0.03   [DE] kleine Fragmente verwerfen / [EN] discard small fragments
+    --gutter 0.002    [DE] auch noch engere Zwischenraeume trennen (mehr Schnitte) / [EN] split on even narrower gaps (more cuts)
+    --min-area 0.008  [DE] auch kleine Panels behalten (Standard verwirft kleine Fragmente) / [EN] keep small panels too (default discards small fragments)
     --bridge 0.2      [DE] grosszuegiger gegenueber Figuren, die ueber den Rand ragen / [EN] more tolerant of art bleeding over a panel edge
     --tolerance 45    [DE] fuer graue/vergilbte Scans / [EN] for grey/yellowed scans
 
@@ -580,6 +580,46 @@ def _segments(sub: np.ndarray, axis: int, min_gutter: int, noise: float, kernel:
     return [s for s in segs if s[1] - s[0] >= 4]
  
  
+def _filtered_children(mask, boxes, ctx):
+    """Kandidaten trimmen und zu kleine Fragmente (Seitenzahl, Staub) verwerfen."""
+    out = []
+    for b in boxes:
+        t = _trim(mask, b, ctx["noise"])
+        if t is None:
+            continue
+        if (t[2] - t[0]) * (t[3] - t[1]) < ctx["min_area"] * ctx["page_area"]:
+            continue
+        out.append(t)
+    return out
+
+
+def _component_children(mask, box, ctx):
+    """Ausweichmethode fuer 'Windmuehlen'-Layouts: stehen Panels sowohl in
+    Zeilen als auch Spalten versetzt zueinander (kein Panel reicht ueber die
+    volle Breite/Hoehe), findet der Gutter-Schnitt keine durchgehend leere
+    Zeile/Spalte - jedes Panel ist trotzdem einzeln vom Hintergrund umschlossen,
+    also trennt eine Zusammenhangsanalyse der Inhaltsmaske sie sauber.
+
+    An dem Punkt, an dem sich vier Panels in der Mitte einer Windmuehle
+    beruehren, kann ihr Rahmen sich um wenige Pixel ueberlappen (Rundung
+    beim Druck/Scan) und alle vier zu einem Klumpen verschmelzen. Vor dem
+    Verbinden wird die Maske deshalb um den halben Gutter-Mindestabstand
+    erodiert, um genau diese Beruehrpunkte zu kappen; die Boxen werden
+    danach wieder um denselben Betrag aufgeweitet und auf den Originalinhalt
+    zurueckgetrimmt.
+    """
+    x0, y0, x1, y1 = box
+    sub = mask[y0:y1, x0:x1].astype(np.uint8)
+    r = max(1, ctx["min_gutter"] // 2)
+    eroded = cv2.erode(sub, cv2.getStructuringElement(cv2.MORPH_RECT, (r, r)))
+    n, _, stats, _ = cv2.connectedComponentsWithStats(eroded, 8)
+    sh, sw = sub.shape
+    boxes = [(x0 + max(0, cx - r), y0 + max(0, cy - r),
+              x0 + min(sw, cx + cw + r), y0 + min(sh, cy + ch + r))
+             for cx, cy, cw, ch, _ in stats[1:]]
+    return _filtered_children(mask, boxes, ctx)
+
+
 def split_region(mask, box, ctx, depth=0, axis=0):
     """Region rekursiv an Guttern zerlegen. axis 0 = horizontal schneiden (Zeilen)."""
     box = _trim(mask, box, ctx["noise"])
@@ -588,7 +628,7 @@ def split_region(mask, box, ctx, depth=0, axis=0):
     x0, y0, x1, y1 = box
     if depth >= ctx["max_depth"] or (x1 - x0) < 8 or (y1 - y0) < 8:
         return [box]
- 
+
     sub = mask[y0:y1, x0:x1]
     # erst sauber (Gutter voellig leer), danach tolerant (ueberstehende Zeichnungen)
     for kern_x, kern_y in ((1, 1), (ctx["bridge_x"], ctx["bridge_y"])):
@@ -597,30 +637,46 @@ def split_region(mask, box, ctx, depth=0, axis=0):
             segs = _segments(sub, a, ctx["min_gutter"], ctx["noise"], kernel)
             if not segs or len(segs) < 2:
                 continue
- 
-            children = []
-            for c0, c1 in segs:
-                child = ((x0, y0 + c0, x1, y0 + c1) if a == 0
-                         else (x0 + c0, y0, x0 + c1, y1))
-                t = _trim(mask, child, ctx["noise"])
-                if t is None:
-                    continue
-                if (t[2] - t[0]) * (t[3] - t[1]) < ctx["min_area"] * ctx["page_area"]:
-                    continue  # Seitenzahl, Credits, Staub
-                children.append(t)
- 
+
+            raw = [((x0, y0 + c0, x1, y0 + c1) if a == 0
+                    else (x0 + c0, y0, x0 + c1, y1)) for c0, c1 in segs]
+            children = _filtered_children(mask, raw, ctx)
+
             if len(children) < 2:
                 continue
             out = []
             for t in children:
                 out.extend(split_region(mask, t, ctx, depth + 1, 1 - a))
             return out
- 
+
+    children = _component_children(mask, box, ctx)
+    if len(children) >= 2:
+        box_area = (x1 - x0) * (y1 - y0)
+        out = []
+        for t in children:
+            # Ein Panel, das sich nicht sauber vom Rest loesen laesst (z.B. ein
+            # Panel, das mit einem Nachbarn zu einer L-Form verschmolzen bleibt),
+            # liefert hier eine Box fast in Groesse der Ausgangsbox zurueck. Die
+            # nochmal an split_region zu uebergeben, fuehrt zum selben Ergebnis
+            # in Dauerschleife bis max_depth - stattdessen direkt als Blatt
+            # uebernehmen.
+            if (t[2] - t[0]) * (t[3] - t[1]) >= 0.9 * box_area:
+                out.append(t)
+            else:
+                out.extend(split_region(mask, t, ctx, depth + 1, axis))
+        return out
+
     return [box]
  
  
 def _merge_duplicates(boxes):
-    """Boxen zusammenfassen, die sich fast vollstaendig ueberlappen."""
+    """Boxen zusammenfassen, die sich fast vollstaendig ueberlappen (dieselbe
+    Kandidatenbox, nur mit leicht unterschiedlichem Trim aus verschiedenen
+    Erkennungswegen). Bewusst per IoU (nicht nur relativ zur kleineren Box):
+    bei einem L-foermigen Panel kann eine kleine Nachbarbox vollstaendig in
+    dessen Bounding-Box liegen, ohne dass beide dasselbe Panel meinen - das
+    darf nicht zusammengefasst werden.
+    """
     out = []
     for b in boxes:
         merged = False
@@ -628,9 +684,9 @@ def _merge_duplicates(boxes):
             ix = max(0, min(b[2], o[2]) - max(b[0], o[0]))
             iy = max(0, min(b[3], o[3]) - max(b[1], o[1]))
             inter = ix * iy
-            smaller = min((b[2] - b[0]) * (b[3] - b[1]),
-                          (o[2] - o[0]) * (o[3] - o[1]))
-            if smaller > 0 and inter / smaller > 0.85:
+            union = ((b[2] - b[0]) * (b[3] - b[1])
+                     + (o[2] - o[0]) * (o[3] - o[1]) - inter)
+            if union > 0 and inter / union > 0.85:
                 out[i] = (min(b[0], o[0]), min(b[1], o[1]),
                           max(b[2], o[2]), max(b[3], o[3]))
                 merged = True
@@ -640,6 +696,35 @@ def _merge_duplicates(boxes):
     return out
  
  
+def _extend_to_neighbors(boxes, w, h, pad, overlap_frac=0.4):
+    """Kanten ohne erkannte Rahmenlinie (Inhalt franst zum Hintergrund aus,
+    statt an einer Umrandung zu enden - z.B. ein Schatten oder eine
+    einfarbige Flaeche knapp vor dem eigentlichen Panelrand) bis zur Mitte
+    des Gutters zum naechsten Panel in Zeile/Spalte ziehen, oder bis zum
+    Seitenrand (minus pad), wenn dort kein Nachbar liegt. Bei sauber
+    umrandeten Panels aendert das nur ein paar Randpixel im Gutter.
+    """
+    out = []
+    for i, (x0, y0, x1, y1) in enumerate(boxes):
+        others = [b for j, b in enumerate(boxes) if j != i]
+        row = [b for b in others if min(y1, b[3]) - max(y0, b[1])
+               > overlap_frac * min(y1 - y0, b[3] - b[1])]
+        col = [b for b in others if min(x1, b[2]) - max(x0, b[0])
+               > overlap_frac * min(x1 - x0, b[2] - b[0])]
+
+        left = [b[2] for b in row if b[2] <= x0]
+        nx0 = (max(left) + x0) // 2 if left else max(0, x0 - pad)
+        right = [b[0] for b in row if b[0] >= x1]
+        nx1 = (min(right) + x1) // 2 if right else min(w, x1 + pad)
+        top = [b[3] for b in col if b[3] <= y0]
+        ny0 = (max(top) + y0) // 2 if top else max(0, y0 - pad)
+        bottom = [b[1] for b in col if b[1] >= y1]
+        ny1 = (min(bottom) + y1) // 2 if bottom else min(h, y1 + pad)
+
+        out.append((nx0, ny0, nx1, ny1))
+    return out
+
+
 def order_panels(boxes, manga: bool):
     """Panels in Zeilen gruppieren und in Lesereihenfolge bringen.
  
@@ -743,6 +828,9 @@ def detect_panels(img: np.ndarray, args) -> list[tuple[int, int, int, int]]:
     for x0, y0, x1, y1 in best:
         boxes.append((max(0, int(x0 * inv)), max(0, int(y0 * inv)),
                       min(w, int(round(x1 * inv))), min(h, int(round(y1 * inv)))))
+    if len(boxes) > 1:
+        pad = max(4, int(min(h, w) * args.gutter))
+        boxes = _extend_to_neighbors(boxes, w, h, pad)
     ordered, solo = order_panels(boxes, args.manga)
     return ordered, solo, best_bg
 
@@ -957,11 +1045,11 @@ def main():
     ap.add_argument("--max-upscale", type=float, default=2.5)
     ap.add_argument("--tolerance", type=int, default=28,
                     help="Farbabstand zum Hintergrund, ab dem ein Pixel als Inhalt gilt")
-    ap.add_argument("--gutter", type=float, default=0.008,
+    ap.add_argument("--gutter", type=float, default=0.004,
                     help="Mindestbreite eines Gutters als Anteil der Seite")
     ap.add_argument("--noise", type=float, default=0.006,
                     help="erlaubter Stoeranteil in einer 'leeren' Zeile/Spalte")
-    ap.add_argument("--min-area", type=float, default=0.012,
+    ap.add_argument("--min-area", type=float, default=0.03,
                     help="kleinste Panelflaeche als Anteil der Seite")
     ap.add_argument("--max-panels", type=int, default=24,
                     help="mehr Panels pro Seite gelten als Fehlerkennung")
