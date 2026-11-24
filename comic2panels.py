@@ -65,6 +65,21 @@ books. It ends up in the new CBZ in three places:
     --bridge 0.2      [DE] grosszuegiger gegenueber Figuren, die ueber den Rand ragen / [EN] more tolerant of art bleeding over a panel edge
     --tolerance 45    [DE] fuer graue/vergilbte Scans / [EN] for grey/yellowed scans
 
+Kindle (Colorsoft & Co.):
+    [DE] Kindles lesen kein CBZ. Mit --kindle wird das Ergebnis direkt ueber
+    Kindle Comic Converter (KCC) in eine Kindle-Datei (MOBI/AZW3) umgewandelt -
+    passend zur Displayaufloesung, in Farbe, ohne dass KCC nachschneidet.
+    [EN] Kindles can't read CBZ. With --kindle the result is converted straight
+    to a Kindle file (MOBI/AZW3) via Kindle Comic Converter (KCC) - sized for the
+    screen, in colour, without KCC re-cropping it.
+        python3 comic2panels.py x.cbr --kindle -o ~/Desktop/kindle
+        python3 comic2panels.py x.cbr --kindle --kindle-profile KPW6   # Paperwhite 12. Gen
+        python3 comic2panels.py x.cbr --kindle --keep-cbz              # CBZ zusaetzlich behalten
+    [DE] Benoetigt: KCC-Kommandozeilenversion (kcc-c2e) und fuer MOBI den Kindle
+    Previewer (liefert kindlegen). Pfad notfalls mit --kcc oder $KCC_C2E angeben.
+    [EN] Needs: KCC command-line build (kcc-c2e) and, for MOBI, Kindle Previewer
+    (provides kindlegen). Set the path with --kcc or $KCC_C2E if needed.
+
 Voraussetzungen / Requirements:
     pip3 install opencv-python-headless numpy
     CBR/RAR: [DE] macOS bringt "bsdtar" mit, das reicht meistens. Sonst: brew install unar
@@ -80,6 +95,7 @@ import html
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -870,6 +886,90 @@ def write_preview(img, boxes, path: Path):
     cv2.imwrite(str(path), vis, [cv2.IMWRITE_JPEG_QUALITY, 70])
  
  
+# ---------------------------------------------------------------------------
+# Kindle-Ausgabe ueber Kindle Comic Converter (KCC)
+# ---------------------------------------------------------------------------
+
+# Displayaufloesungen der KCC-Profile (aus kindlecomicconverter/image.py).
+# Die Panels werden gleich in dieser Groesse erzeugt, damit KCC nicht noch
+# einmal skaliert.
+KCC_PROFILE_SIZES = {
+    "KCS": (1272, 1696),    # Kindle Colorsoft
+    "KPW6": (1272, 1696),   # Kindle Paperwhite 12. Gen (2024)
+    "KPW5": (1236, 1648),   # Kindle Paperwhite 11. Gen / Signature
+    "KO": (1264, 1680),     # Kindle Oasis 2/3
+    "K11": (1072, 1448),    # Kindle 11. Gen
+    "KS": (1860, 2480),     # Kindle Scribe 1/2
+    "KS3": (1986, 2648),    # Kindle Scribe 3
+    "KSCS": (1986, 2648),   # Kindle Scribe Colorsoft
+}
+KCC_COLOR_PROFILES = {"KCS", "KSCS"}
+KINDLE_EXT = {"MOBI": ".mobi", "EPUB": ".epub"}
+
+
+def find_kcc(explicit: str | None) -> list[str] | None:
+    """Aufruf fuer kcc-c2e ermitteln (als Befehlsliste)."""
+    candidates = []
+    if explicit:
+        candidates.append(os.path.expanduser(explicit))
+    if os.environ.get("KCC_C2E"):
+        candidates.append(os.path.expanduser(os.environ["KCC_C2E"]))
+    for name in ("kcc-c2e", "kcc_c2e", "kcc-c2e.py"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(found)
+    # Release-Binaries heissen z.B. kcc_c2e_9.1.0 - im PATH danach suchen
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if d and os.path.isdir(d):
+            candidates += sorted(str(p) for p in Path(d).glob("kcc*c2e*"))
+    for c in candidates:
+        p = Path(c)
+        if not p.is_file():
+            continue
+        if p.suffix == ".py":
+            return [sys.executable, str(p)]
+        if os.access(p, os.X_OK):
+            return [str(p)]
+    return None
+
+
+def kindle_name(target_cbz: Path, args) -> Path:
+    return target_cbz.with_suffix(KINDLE_EXT[args.kindle_format])
+
+
+def run_kcc(folder: Path, outdir: Path, stem: str, args) -> bool:
+    """Bildordner (inkl. ComicInfo.xml) mit KCC in eine Kindle-Datei umwandeln."""
+    cmd = list(args.kcc_cmd) + [
+        "-p", args.kindle_profile,
+        "-f", args.kindle_format,
+        "-c", "0",                 # nicht nachschneiden - Panels sind schon fertig
+        "-o", str(outdir),
+        "--filename", stem,
+    ]
+    if args.manga:
+        cmd.append("-m")
+    if not args.grayscale and args.kindle_profile in KCC_COLOR_PROFILES:
+        cmd.append("--forcecolor")
+    if args.kcc_args:
+        cmd += shlex.split(args.kcc_args)
+    cmd.append(str(folder))
+    print("  KCC: " + " ".join(shlex.quote(c) for c in cmd[len(args.kcc_cmd):]))
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True,
+                             encoding="utf-8", errors="replace")
+    except OSError as e:
+        print(f"  ! KCC konnte nicht gestartet werden: {e}")
+        return False
+    if res.returncode != 0:
+        tail = (res.stdout + res.stderr).strip().splitlines()[-15:]
+        print("  ! KCC-Fehler:\n    " + "\n    ".join(tail))
+        if any("kindlegen" in line.lower() for line in tail):
+            print("    -> Fuer MOBI wird 'kindlegen' gebraucht: Kindle Previewer "
+                  "installieren (KCC findet es dann selbst).")
+        return False
+    return True
+
+
 def process_comic(src: Path, outdir: Path, args) -> Path | None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -971,16 +1071,37 @@ def process_comic(src: Path, outdir: Path, args) -> Path | None:
         outdir.mkdir(parents=True, exist_ok=True)
         target = outdir / output_name(src, meta if has_meta else {}, args)
         images = sorted(stage.iterdir(), key=lambda p: p.name)
-        with zipfile.ZipFile(target, "w", zipfile.ZIP_STORED) as zf:
-            for f in images:
-                zf.write(f, f.name)
+        if not args.kindle or args.keep_cbz:
+            with zipfile.ZipFile(target, "w", zipfile.ZIP_STORED) as zf:
+                for f in images:
+                    zf.write(f, f.name)
+                if has_meta:
+                    zf.writestr("ComicInfo.xml",
+                                build_comicinfo(meta, len(images), args))
+                    if opf_path:      # vollstaendige Calibre-Daten, verlustfrei
+                        zf.write(opf_path, "metadata.opf")
+                    zf.comment = build_cbi_comment(meta)
+
+        if args.kindle:
+            # KCC bekommt den Bildordner direkt (spart das Entpacken und 7-Zip).
+            # Ordnername = Buchtitel, falls keine Metadaten vorhanden sind.
+            book_dir = tmp / "_kcc" / target.stem
+            book_dir.parent.mkdir()
+            stage.rename(book_dir)
             if has_meta:
-                zf.writestr("ComicInfo.xml",
-                            build_comicinfo(meta, len(images), args))
-                if opf_path:      # vollstaendige Calibre-Daten, verlustfrei
-                    zf.write(opf_path, "metadata.opf")
-                zf.comment = build_cbi_comment(meta)
- 
+                (book_dir / "ComicInfo.xml").write_text(
+                    build_comicinfo(meta, len(images), args), encoding="utf-8")
+            ext = KINDLE_EXT[args.kindle_format]
+            before = set(outdir.glob("*" + ext))
+            if not run_kcc(book_dir, outdir, target.stem, args):
+                return None
+            made = sorted(set(outdir.glob("*" + ext)) - before)
+            target = kindle_name(target, args)
+            if len(made) > 1:
+                print(f"  (KCC hat in {len(made)} Dateien aufgeteilt)")
+            elif made:
+                target = made[0]
+
         if args.repack:
             print(f"  {len(pages)} Seiten unveraendert -> {target.name}" + " " * 20)
         else:
@@ -1000,8 +1121,25 @@ def main():
                      "[EN] Split comics into one page per panel (default: PocketBook Era Color).")
     ap.add_argument("inputs", nargs="+", help="CBZ/CBR/PDF/Ordner")
     ap.add_argument("-o", "--out", default="panels", help="Zielordner")
-    ap.add_argument("--width", type=int, default=1264, help="Displaybreite (Standard 1264)")
-    ap.add_argument("--height", type=int, default=1680, help="Displayhoehe (Standard 1680)")
+    ap.add_argument("--width", type=int, default=None,
+                    help="Displaybreite (Standard 1264, mit --kindle passend zum Profil)")
+    ap.add_argument("--height", type=int, default=None,
+                    help="Displayhoehe (Standard 1680, mit --kindle passend zum Profil)")
+    ap.add_argument("--kindle", action="store_true",
+                    help="Kindle-Datei (MOBI) ueber Kindle Comic Converter erzeugen "
+                         "statt CBZ (Standard: Kindle Colorsoft)")
+    ap.add_argument("--kindle-profile", default="KCS", metavar="PROFIL",
+                    help="KCC-Geraeteprofil, z.B. KCS (Colorsoft, Standard), "
+                         "KPW6 (Paperwhite 12), KSCS (Scribe Colorsoft)")
+    ap.add_argument("--kindle-format", choices=sorted(KINDLE_EXT), default="MOBI",
+                    help="Ausgabeformat fuer den Kindle (Standard MOBI, braucht kindlegen)")
+    ap.add_argument("--keep-cbz", action="store_true",
+                    help="mit --kindle zusaetzlich die CBZ behalten")
+    ap.add_argument("--kcc", default=None, metavar="PFAD",
+                    help="Pfad zu kcc-c2e (sonst $KCC_C2E oder Suche im PATH)")
+    ap.add_argument("--kcc-args", default="", metavar="'...'",
+                    help="zusaetzliche Optionen fuer KCC, mit '=' angeben, "
+                         "z.B. --kcc-args=\"--eraserainbow\"")
     ap.add_argument("--manga", action="store_true", help="Lesereihenfolge rechts nach links")
     ap.add_argument("--repack", action="store_true",
                     help="nicht in Panels zerlegen, nur CBR -> CBZ umpacken "
@@ -1065,7 +1203,29 @@ def main():
     ap.add_argument("--denoise", action="store_true",
                     help="Rasterpunkte/Scanstaub vor der Erkennung glaetten")
     args = ap.parse_args()
- 
+
+    # Zielaufloesung: explizite Angabe > Kindle-Profil > PocketBook Era Color
+    default_size = (1264, 1680)
+    if args.kindle:
+        default_size = KCC_PROFILE_SIZES.get(args.kindle_profile, default_size)
+        if args.kindle_profile not in KCC_PROFILE_SIZES and not (args.width and args.height):
+            print(f"Hinweis: Aufloesung fuer Profil {args.kindle_profile} unbekannt - "
+                  f"verwende {default_size[0]}x{default_size[1]}, KCC skaliert nach. "
+                  "Besser --width/--height angeben.")
+        if args.repack:
+            print("! --repack und --kindle zusammen ergeben keinen Sinn.")
+            return 2
+        args.kcc_cmd = find_kcc(args.kcc)
+        if not args.kcc_cmd:
+            print("! Kindle Comic Converter (kcc-c2e) nicht gefunden.\n"
+                  "  Download: https://github.com/ciromattia/kcc/releases "
+                  "(die 'c2e'-Kommandozeilenversion)\n"
+                  "  Dann ausfuehrbar machen und mit --kcc PFAD angeben "
+                  "oder in den PATH legen.")
+            return 2
+    args.width = args.width or default_size[0]
+    args.height = args.height or default_size[1]
+
     outdir = Path(os.path.expanduser(args.out))
  
     # Arbeitsliste aufbauen: (Quelldatei, Zielordner)
@@ -1098,6 +1258,8 @@ def main():
         # Schon verarbeitet? (nur pruefbar, wenn der Name nicht aus Metadaten kommt)
         if not args.force and not args.name_from_meta:
             probe = dest / output_name(src, {}, args)
+            if args.kindle:
+                probe = kindle_name(probe, args)
             if probe.exists():
                 print(f"= [{i}/{len(jobs)}] uebersprungen (existiert): {probe.name}")
                 skipped += 1

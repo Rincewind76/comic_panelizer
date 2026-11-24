@@ -51,6 +51,32 @@ python3 comic2panels.py ~/Comics --scan --scan-ext cbr,cbz,pdf -o out
 python3 comic2panels.py ~/Comics/*.cbr --repack -o ~/Desktop/cbz
 ```
 
+### Kindle (Colorsoft & Co.)
+
+Kindles lesen kein CBZ. Mit `--kindle` wird das Ergebnis direkt über [Kindle Comic Converter (KCC)](https://github.com/ciromattia/kcc) in eine Kindle-Datei umgewandelt. Die Panels werden dabei gleich in der Auflösung des Geräts erzeugt (Colorsoft: 1272 × 1696), KCC schneidet nichts nach (`-c 0`), und Farbe bleibt erhalten.
+
+```bash
+python3 comic2panels.py "Batman 001.cbr" --kindle -o ~/Desktop/kindle
+python3 comic2panels.py ~/Comics --scan --kindle -o ~/Desktop/kindle
+python3 comic2panels.py x.cbr --kindle --kindle-profile KPW6   # Paperwhite 12. Gen
+python3 comic2panels.py x.cbr --kindle --keep-cbz              # CBZ zusätzlich behalten
+```
+
+**Voraussetzungen:**
+- KCC-Kommandozeilenversion (`kcc-c2e`) von den [KCC-Releases](https://github.com/ciromattia/kcc/releases). In den `PATH` legen oder mit `--kcc PFAD` (bzw. `$KCC_C2E`) angeben.
+- Für MOBI: [Kindle Previewer](https://www.amazon.com/Kindle-Previewer/b?ie=UTF8&node=21381691011) installieren. Er liefert `kindlegen`, das KCC automatisch findet.
+
+| Option | Bedeutung |
+|---|---|
+| `--kindle` | Kindle-Datei über KCC erzeugen statt CBZ |
+| `--kindle-profile KCS` | KCC-Geräteprofil: `KCS` Colorsoft (Standard), `KPW6` Paperwhite 12, `KSCS` Scribe Colorsoft … |
+| `--kindle-format MOBI` | `MOBI` (Standard) oder `EPUB` |
+| `--keep-cbz` | die CBZ zusätzlich behalten |
+| `--kcc PFAD` | Pfad zu `kcc-c2e` |
+| `--kcc-args="…"` | weitere KCC-Optionen durchreichen, z. B. `--kcc-args="--eraserainbow"` |
+
+**Auf den Kindle übertragen:** per USB-Kabel. Die Kindles ab 2024 (u. a. Colorsoft) verbinden sich per MTP; am Mac braucht es dafür die App *Send to Kindle für Mac* (Tools → USB File Manager) oder z. B. OpenMTP. Die Datei in den Ordner `documents` kopieren. Per Mail klappt es nicht: Send to Kindle nimmt kein MOBI mehr an, und E-Mails sind auf 50 MB begrenzt.
+
 ### Erste/letzte Seiten unverändert lassen
 
 Mit `--skip-start N` und `--skip-end N` werden die ersten bzw. letzten N Seiten 1:1 in die Ausgabe übernommen — ohne Panel-Erkennung. Praktisch für Cover, Vorworte, Anhang oder Werbeseiten, die nicht zerschnitten werden sollen.
@@ -148,6 +174,32 @@ python3 comic2panels.py ~/Comics --scan --scan-ext cbr,cbz,pdf -o out
 ```bash
 python3 comic2panels.py ~/Comics/*.cbr --repack -o ~/Desktop/cbz
 ```
+
+### Kindle (Colorsoft & co.)
+
+Kindles can't read CBZ. With `--kindle` the result is converted straight into a Kindle file via [Kindle Comic Converter (KCC)](https://github.com/ciromattia/kcc). Panels are rendered at the device resolution right away (Colorsoft: 1272 × 1696), KCC doesn't re-crop (`-c 0`), and colour is kept.
+
+```bash
+python3 comic2panels.py "Batman 001.cbr" --kindle -o ~/Desktop/kindle
+python3 comic2panels.py ~/Comics --scan --kindle -o ~/Desktop/kindle
+python3 comic2panels.py x.cbr --kindle --kindle-profile KPW6   # Paperwhite 12th gen
+python3 comic2panels.py x.cbr --kindle --keep-cbz              # keep the CBZ as well
+```
+
+**Requirements:**
+- KCC command-line build (`kcc-c2e`) from the [KCC releases](https://github.com/ciromattia/kcc/releases). Put it on your `PATH` or pass `--kcc PATH` (or set `$KCC_C2E`).
+- For MOBI: install [Kindle Previewer](https://www.amazon.com/Kindle-Previewer/b?ie=UTF8&node=21381691011); it ships `kindlegen`, which KCC detects automatically.
+
+| Option | Meaning |
+|---|---|
+| `--kindle` | produce a Kindle file via KCC instead of a CBZ |
+| `--kindle-profile KCS` | KCC device profile: `KCS` Colorsoft (default), `KPW6` Paperwhite 12, `KSCS` Scribe Colorsoft … |
+| `--kindle-format MOBI` | `MOBI` (default) or `EPUB` |
+| `--keep-cbz` | keep the CBZ as well |
+| `--kcc PATH` | path to `kcc-c2e` |
+| `--kcc-args="…"` | pass extra options to KCC, e.g. `--kcc-args="--eraserainbow"` |
+
+**Getting it onto the Kindle:** use a USB cable. Kindles from 2024 on (including the Colorsoft) connect via MTP; on a Mac use Amazon's *Send to Kindle for Mac* app (Tools → USB File Manager) or e.g. OpenMTP. Copy the file into the `documents` folder. Email won't work: Send to Kindle no longer accepts MOBI, and email is capped at 50 MB.
 
 ### Keeping first/last pages unchanged
 
